@@ -238,16 +238,24 @@ function processSheets(kR,pR,iR){
   const apS=new Set(['Approved','Approved after Rejection']);
   const elS=new Set(['Eligible under insurance','Need Pre-Approval']);
   // Dept avg amounts
+  // Hardcoded dept avg approval amounts (from historical IPD data — ₹ values)
+  // Used to estimate financial loss for leads that didn't convert to IPD
+  const deptAvg={
+    'AESTHETICS / PLASTIC SURGERY':100021,'ENT':136517,'GYNAECOLOGY':86072,
+    'LAPAROSCOPY':283950,'ORTHOPAEDICS':239496,'PROCTOLOGY':80480,
+    'UROLOGY':43951,'VASCULAR':135430,'KIDNEY STONE':75596,
+    'GENERAL SURGERY':84576,'INTERNAL MEDICINE':30040
+  };
+  // Also build from live IPD amounts if available (overrides hardcoded when data is good)
   const deptAcc={};
-  // Build dept avg using IPD dept directly (iDept) — more reliable than kM lookup
   Object.entries(iAmt).forEach(([lid,amt])=>{
-    const dept=iDept[lid]||(kM[lid]&&kM[lid].dept)||'';
-    if(dept){if(!deptAcc[dept])deptAcc[dept]=[];deptAcc[dept].push(amt);}
+    if(amt>1000&&amt<5000000){ // sanity check: ₹1K to ₹50L range
+      const dept=iDept[lid]||(kM[lid]&&kM[lid].dept)||'';
+      if(dept){if(!deptAcc[dept])deptAcc[dept]=[];deptAcc[dept].push(amt);}
+    }
   });
-  const deptAvg={};Object.entries(deptAcc).forEach(([d,v])=>deptAvg[d]=Math.round(v.reduce((a,b)=>a+b,0)/v.length));
-  // Fallback hardcoded averages from historical data if live data has no amounts
-  const deptAvgFallback={'AESTHETICS / PLASTIC SURGERY':100021,'ENT':136517,'GYNAECOLOGY':86072,'LAPAROSCOPY':283950,'ORTHOPAEDICS':239496,'PROCTOLOGY':80480,'UROLOGY':43951,'VASCULAR':135430,'KIDNEY STONE':75596,'GENERAL SURGERY':84576,'INTERNAL MEDICINE':30040};
-  Object.entries(deptAvgFallback).forEach(([d,v])=>{if(!deptAvg[d])deptAvg[d]=v;});
+  // Only override hardcoded if we have sufficient live samples
+  Object.entries(deptAcc).forEach(([d,v])=>{if(v.length>=10)deptAvg[d]=Math.round(v.reduce((a,b)=>a+b,0)/v.length);});
   const t1={},t2={},t3={},t4={},t5={},t6={},lcA={},pcsS={};
   Object.entries(kM).forEach(([lid,r])=>{
     const kk=r.month+'|'+r.dept+'|'+r.city;
