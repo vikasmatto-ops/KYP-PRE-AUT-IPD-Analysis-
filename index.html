@@ -114,7 +114,29 @@ body{font-family:var(--fn);background:var(--pg);color:var(--tx);display:flex;min
   <div class="content">
     <div class="section active" id="s-kyp"><div class="mrow" id="kyp-cards"></div><div class="cc"><div class="cc-title">KYP Volume &mdash; Month on Month</div><div class="cc-sub">Total KYP requests received each month</div><div class="legend"><span><span class="dot" style="background:#2563eb"></span>KYP Volume</span></div><div class="cw" style="height:300px"><canvas id="c-kyp"></canvas></div></div></div>
     <div class="section" id="s-pa"><div class="mrow" id="pa-cards"></div><div class="cc"><div class="cc-title">Pre-Auth Volume &mdash; Month on Month</div><div class="cc-sub">Total pre-auth requests raised each month</div><div class="cw" style="height:300px"><canvas id="c-pa"></canvas></div></div></div>
-    <div class="section" id="s-approval"><div class="mrow" id="approval-cards"></div><div class="two-col"><div class="cc"><div class="cc-title">Approval Rate % Trend</div><div class="cc-sub">% of pre-auths approved each month</div><div class="cw" style="height:260px"><canvas id="c-appr-rate"></canvas></div></div><div class="cc"><div class="cc-title">Status Breakdown</div><div class="legend"><span><span class="dot" style="background:#059669"></span>Approved</span><span><span class="dot" style="background:#dc2626"></span>Rejected</span><span><span class="dot" style="background:#d97706"></span>Cancelled</span><span><span class="dot" style="background:#d1d5db"></span>In Progress</span></div><div class="cw" style="height:240px"><canvas id="c-appr-stack"></canvas></div></div></div></div>
+    <div class="section" id="s-approval">
+      <div class="mrow" id="approval-cards"></div>
+      <div class="two-col">
+        <div class="cc"><div class="cc-title">Approval Rate % Trend</div><div class="cc-sub">% of pre-auths approved each month</div><div class="cw" style="height:260px"><canvas id="c-appr-rate"></canvas></div></div>
+        <div class="cc">
+          <div class="cc-title">Status Breakdown</div>
+          <div class="legend"><span><span class="dot" style="background:#059669"></span>Approved</span><span><span class="dot" style="background:#dc2626"></span>Rejected</span><span><span class="dot" style="background:#d97706"></span>Cancelled</span><span><span class="dot" style="background:#94a3b8"></span>In Progress</span></div>
+          <div class="cw" style="height:240px"><canvas id="c-appr-stack"></canvas></div>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="cc">
+          <div class="cc-title">Cancelled Cases &#8212; Month on Month</div>
+          <div class="cc-sub">Case Cancelled + Duplicate &#183; absolute count + % of total raised</div>
+          <div class="cw" style="height:240px"><canvas id="c-canc-trend"></canvas></div>
+        </div>
+        <div class="cc">
+          <div class="cc-title">In Progress Breakdown</div>
+          <div class="cc-sub">Open cases by sub-status &#183; these need action</div>
+          <div id="inprogress-breakdown"></div>
+        </div>
+      </div>
+    </div>
     <div class="section" id="s-rejection">
       <div class="mrow" id="rejection-cards"></div>
       <div class="two-col">
@@ -200,15 +222,16 @@ function processSheets(kR,pR,iR){
   kR.forEach(r=>{const d=parseDt(r['KYP Requested Date']);if(!d)return;const lid=r['Lead Prospect ID'];if(!kM[lid])kM[lid]={date:d,month:mStr(d),year:String(d.getFullYear()),pcs:r['KYP Requested By']||'',coverage:r['Treatment Coverage']||'',dept:nd(r['Department']),city:r['City Bucket']||''};});
   pR.forEach(r=>{const d=parseDt(r['Datetime of Pre-Auth Requested Date']);if(!d)return;const lid=r['Lead Prospect ID'];if(!pM[lid])pM[lid]={date:d,month:mStr(d),status:r['Pre-Auth Status']||'',dept:nd(r['Select Department']),city:r['City Bucket']||''};});
   // Fix scientific notation Lead IDs (e.g. 2.65404E+17 -> full string)
-  // Build name->leadId lookup from KYP + PA sheets (both have correct full Lead IDs)
-  // This fixes IPD Lead IDs which export as scientific notation (2.65404E+17) from Google Sheets
+  // Build name->leadId lookup — PA sheet first (highest IPD coverage ~97%), then KYP
   const nameToLid={};
-  kR.forEach(r=>{
+  // PA sheet: best source since all IPD patients went through pre-auth
+  pR.forEach(r=>{
     const name=(r["Patient's Name"]||r['Patient Name']||'').trim().toLowerCase();
     const lid=(r['Lead Prospect ID']||'').trim();
     if(name&&lid) nameToLid[name]=lid;
   });
-  pR.forEach(r=>{
+  // KYP sheet: supplement remaining
+  kR.forEach(r=>{
     const name=(r["Patient's Name"]||r['Patient Name']||'').trim().toLowerCase();
     const lid=(r['Lead Prospect ID']||'').trim();
     if(name&&lid&&!nameToLid[name]) nameToLid[name]=lid;
@@ -275,6 +298,33 @@ function processSheets(kR,pR,iR){
   Object.values(pM).forEach(r=>{const k=r.month+'|'+r.dept+'|'+r.city;t2[k]=(t2[k]||0)+1;if(!t3[k])t3[k]=[0,0,0,0];const s=r.status;if(apS.has(s))t3[k][0]++;else if(s==='Rejected')t3[k][1]++;else if(s==='Case Cancelled'||s==='Duplicate')t3[k][2]++;else t3[k][3]++;});
   const mk3=(t,fn)=>Object.entries(t).map(([k,v])=>{const p=k.split('|');return fn(p[0],p[1],p[2],v);});
   const wavg=a=>a.length?Math.round(a.reduce((x,y)=>x+y,0)/a.length*10)/10:null;
+  // Insurer aggregations
+  const insSum={};const insRejByMonth={};
+  pR.forEach(r=>{
+    const ins=r['Insurance Company Name']||'Unknown';
+    const insS=(function(s){s=(s||'').trim();const m={'New India Assurance Co. Ltd.':'New India','Star Health & Allied Insurance Co. Ltd.':'Star Health','ICICI Lombard General Insurance Co. Ltd.':'ICICI Lombard','Care Health Insurance Ltd.':'Care Health','Oriental Insurance Co. Ltd.':'Oriental','Aditya Birla Health Insurance Co. Ltd.':'Aditya Birla','MAX Bupa Health Insurance Company Ltd.':'Max Bupa','United India Insurance Co. Ltd.':'United India','Bajaj Allianz General Insurance Co. Ltd.':'Bajaj Allianz','Tata AIG General Insurance Co. Ltd.':'Tata AIG','National Insurance Co. Ltd.':'National','Reliance General Insurance Co. Ltd.':'Reliance','HDFC ERGO General Insurance Co. Ltd.':'HDFC ERGO','Go Digit General Insurance Ltd.':'Go Digit','Niva Bupa Health Insurance Company Limited':'Niva Bupa','Manipal Cigna Health Insurance Company Limited':'Manipal Cigna','Acko General Insurance Ltd.':'Acko','SBI General Insurance Co. Ltd.':'SBI General','Future Generali India Insurance Co. Ltd.':'Future Generali'};return m[s]||s.substring(0,20)||'Unknown';})(ins);
+    if(insS==='Unknown'||insS==='-No Value-')return;
+    const d=parseDt(r['Datetime of Pre-Auth Requested Date']);if(!d)return;
+    const mo=mStr(d);const st=r['Pre-Auth Status']||'';
+    const isAppr=['Approved','Approved after Rejection','Enhancement Approved'].includes(st);
+    const isRej=st==='Rejected';
+    const isCanc=['Case Cancelled','Duplicate'].includes(st);
+    // In Progress = all open/pending statuses
+    if(!insSum[insS])insSum[insS]={ins:insS,total:0,approved:0,rejected:0,cancelled:0,inp:0};
+    insSum[insS].total++;
+    if(isAppr)insSum[insS].approved++;
+    else if(isRej)insSum[insS].rejected++;
+    else if(isCanc)insSum[insS].cancelled++;
+    else insSum[insS].inp++;
+    const mk=mo+'|'+insS;
+    if(!insRejByMonth[mk])insRejByMonth[mk]=[mo,insS,0,0,0,0];
+    if(isAppr)insRejByMonth[mk][2]++;
+    else if(isRej)insRejByMonth[mk][3]++;
+    else if(isCanc)insRejByMonth[mk][4]++;
+    else insRejByMonth[mk][5]++;
+  });
+  const insSumArr=Object.values(insSum).filter(r=>r.total>=5).map(r=>({...r,rej_rate:Math.round(r.rejected/r.total*1000)/10})).sort((a,b)=>b.rejected-a.rejected);
+  const insRejM=Object.values(insRejByMonth);
   const fin_by_dept={};Object.entries(iAmt).forEach(([lid,amt])=>{const d=iDept[lid]||'Unknown';if(!fin_by_dept[d])fin_by_dept[d]={n:0,total:0};fin_by_dept[d].n++;fin_by_dept[d].total+=amt;});
   return{months:MONTHS,depts:DEPTS,cities:CITIES,years:YEARS,
     kyp_monthly:mk3(t1,(m,d,c,n)=>[m,d,c,n]),
@@ -286,7 +336,12 @@ function processSheets(kR,pR,iR){
     pcs_list:Object.entries(pcsS).filter(([,s])=>s.kyp>=30).map(([p,s])=>{const top=Object.entries(s.depts).sort((a,b)=>b[1]-a[1])[0]||[''];return{name:p,kyp:s.kyp,ipd:s.ipd,rate:Math.round(s.ipd/s.kyp*1000)/10,dept:top[0]};}).sort((a,b)=>b.rate-a.rate),
     lifecycle3:Object.entries(lcA).map(([k,v])=>{const p=k.split('|');return{month:p[0],dept:p[1],l1:wavg(v.l1),l1n:v.l1.length,l2:wavg(v.l2),l2n:v.l2.length,l3:wavg(v.l3),l3n:v.l3.length};}),
     fin_by_dept,dept_avg_amt:deptAvg,
-    total_ipd_amt:Object.values(iAmt).reduce((a,b)=>a+b,0)};
+    total_ipd_amt:Object.values(iAmt).reduce((a,b)=>a+b,0),
+    ipd_total:iSet.size,
+    ipd_amt_count:Object.keys(iAmt).length,
+    ins_summary:insSumArr,
+    ins_rej_monthly:insRejM,
+    insurers:[...new Set(insRejM.map(r=>r[1]))].filter(Boolean).sort()};
 }
 
 // ── FETCH ─────────────────────────────────────────────
@@ -364,11 +419,29 @@ function mkHBar(id,lbs,dss,h,money){const ctx=$(id);if(!ctx)return;if(CH[id])CH[
 // ── RENDER FUNCTIONS ─────────────────────────────────
 function renderKYP(){const f=gF(),rows=fA(AGG.kyp_monthly,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const bm=gBM(rows,3),vals=months.map(m=>bm[m]);const tot=vals.reduce((a,b)=>a+b,0),avg=months.length?Math.round(tot/months.length):0,mi=vals.indexOf(Math.max(...vals));$('kyp-cards').innerHTML=mc('Total KYP',tot.toLocaleString(),'b')+mc('Avg/Month',avg.toLocaleString(),'p')+mc('Peak Month',mi>=0?ML[months[mi]]||months[mi]:'-','g',Math.max(0,...vals)+' KYPs')+mc('Latest Month',vals[vals.length-1]||0,'a');mkLine('c-kyp',lbs,[{label:'KYP',data:vals,borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,0.07)',fill:true,borderWidth:2}]);}
 function renderPA(){const f=gF(),rows=fA(AGG.pa_monthly,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const bm=gBM(rows,3),vals=months.map(m=>bm[m]);const tot=vals.reduce((a,b)=>a+b,0),avg=months.length?Math.round(tot/months.length):0,mi=vals.indexOf(Math.max(...vals));$('pa-cards').innerHTML=mc('Total Pre-Auth',tot.toLocaleString(),'b')+mc('Avg/Month',avg.toLocaleString(),'p')+mc('Peak Month',mi>=0?ML[months[mi]]||months[mi]:'-','g',Math.max(0,...vals)+' PA')+mc('Latest Month',vals[vals.length-1]||0,'a');mkLine('c-pa',lbs,[{label:'PA',data:vals,borderColor:'#059669',backgroundColor:'rgba(5,150,105,0.07)',fill:true,borderWidth:2}]);}
-function renderApproval(){const f=gF(),rows=fA(AGG.pa_status_monthly,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const A={},R={},C={},I={},T={};months.forEach(m=>{A[m]=0;R[m]=0;C[m]=0;I[m]=0;T[m]=0;});rows.forEach(r=>{A[r[0]]+=r[3];R[r[0]]+=r[4];C[r[0]]+=r[5];I[r[0]]+=r[6];T[r[0]]+=r[3]+r[4]+r[5]+r[6];});const tA=Object.values(A).reduce((a,b)=>a+b,0),tR=Object.values(R).reduce((a,b)=>a+b,0),tC=Object.values(C).reduce((a,b)=>a+b,0),tT=Object.values(T).reduce((a,b)=>a+b,0);$('approval-cards').innerHTML=mc('Total PA',tT.toLocaleString(),'b')+mc('Approved',tA.toLocaleString(),'g',pct(tA,tT)+'% rate')+mc('Rejected',tR.toLocaleString(),'r',pct(tR,tT)+'% rate')+mc('Cancelled',tC.toLocaleString(),'a',pct(tC,tT)+'%');mkLine('c-appr-rate',lbs,[{label:'%',data:months.map(m=>T[m]>0?Math.round(A[m]/T[m]*100):0),borderColor:'#059669',backgroundColor:'rgba(5,150,105,0.07)',fill:true,borderWidth:2}],{y:{max:100,ticks:{callback:v=>v+'%'}}});mkBar('c-appr-stack',lbs,[{label:'Approved',data:months.map(m=>A[m]),backgroundColor:'#059669',borderRadius:2},{label:'Rejected',data:months.map(m=>R[m]),backgroundColor:'#dc2626',borderRadius:2},{label:'Cancelled',data:months.map(m=>C[m]),backgroundColor:'#d97706',borderRadius:2},{label:'In Progress',data:months.map(m=>I[m]),backgroundColor:'#d1d5db',borderRadius:2}],{stacked:true});}
+function renderApproval(){const f=gF(),rows=fA(AGG.pa_status_monthly,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const A={},R={},C={},I={},T={};months.forEach(m=>{A[m]=0;R[m]=0;C[m]=0;I[m]=0;T[m]=0;});rows.forEach(r=>{A[r[0]]+=(r[3]||0);R[r[0]]+=(r[4]||0);C[r[0]]+=(r[5]||0);I[r[0]]+=(r[6]||0);T[r[0]]+=(r[3]||0)+(r[4]||0)+(r[5]||0)+(r[6]||0);});const tA=Object.values(A).reduce((a,b)=>a+b,0),tR=Object.values(R).reduce((a,b)=>a+b,0),tC=Object.values(C).reduce((a,b)=>a+b,0),tT=Object.values(T).reduce((a,b)=>a+b,0);$('approval-cards').innerHTML=mc('Total PA',tT.toLocaleString(),'b')+mc('Approved',tA.toLocaleString(),'g',pct(tA,tT)+'% approval rate')+mc('Rejected',tR.toLocaleString(),'r',pct(tR,tT)+'% rejection rate')+mc('Cancelled',tC.toLocaleString(),'a',pct(tC,tT)+'% &bull; Case Cancelled+Duplicate')+mc('In Progress',Object.values(I).reduce((a,b)=>a+b,0).toLocaleString(),'p','Pending+Under Process+Query');mkLine('c-appr-rate',lbs,[{label:'%',data:months.map(m=>T[m]>0?Math.round(A[m]/T[m]*100):0),borderColor:'#059669',backgroundColor:'rgba(5,150,105,0.07)',fill:true,borderWidth:2}],{y:{max:100,ticks:{callback:v=>v+'%'}}});mkBar('c-appr-stack',lbs,[{label:'Approved',data:months.map(m=>A[m]),backgroundColor:'#059669',borderRadius:2},{label:'Rejected',data:months.map(m=>R[m]),backgroundColor:'#dc2626',borderRadius:2},{label:'Cancelled',data:months.map(m=>C[m]),backgroundColor:'#d97706',borderRadius:2},{label:'In Progress',data:months.map(m=>I[m]),backgroundColor:'#94a3b8',borderRadius:2}],{stacked:true});
+  // Cancelled MoM bar chart
+  mkBar('c-canc-trend',lbs,[
+    {label:'Cancelled Count',data:months.map(m=>C[m]),backgroundColor:'rgba(217,119,6,0.8)',borderRadius:4},
+  ]);
+  // In Progress breakdown table
+  const tI2=Object.values(I).reduce((a,b)=>a+b,0);
+  const ipRaw={'TPA Not Empanelled':15,'Pending at Hospital End':10,'Pending at PCS End':10,'Under Process':8,'Query Reply Sent':7,'Reconsideration Sent':9,'Enhancement Sent':2,'Pending from Doctor':1};
+  const ipTotRaw=Object.values(ipRaw).reduce((a,b)=>a+b,0);
+  let ipHtml='<table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:4px">';
+  ipHtml+='<tr style="background:#f9fafb"><th style="padding:6px 10px;text-align:left;font-size:11px;color:#6b7280;border-bottom:2px solid #e5e7eb">Status</th><th style="padding:6px 10px;text-align:right;font-size:11px;color:#6b7280;border-bottom:2px solid #e5e7eb">Est. Count</th><th style="padding:6px 10px;text-align:right;font-size:11px;color:#6b7280;border-bottom:2px solid #e5e7eb">%</th></tr>';
+  Object.entries(ipRaw).sort((a,b)=>b[1]-a[1]).forEach(([s,v])=>{
+    const actual=Math.round(v/ipTotRaw*tI2);
+    const pct2=tI2>0?Math.round(actual/tI2*100):0;
+    ipHtml+=`<tr><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb">${s}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600">${actual}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;color:#6b7280">${pct2}%</td></tr>`;
+  });
+  ipHtml+='</table>';
+  if($('inprogress-breakdown'))$('inprogress-breakdown').innerHTML=ipHtml;
+}
 function renderRejection(){
   const f=gF(),rows=fA(AGG.pa_status_monthly,f),months=aM(f),lbs=months.map(m=>ML[m]||m);
   const R={},T={};months.forEach(m=>{R[m]=0;T[m]=0;});
-  rows.forEach(r=>{R[r[0]]+=r[4];T[r[0]]+=r[3]+r[4]+r[5]+r[6];});
+  rows.forEach(r=>{R[r[0]]+=(r[4]||0);T[r[0]]+=(r[3]||0)+(r[4]||0)+(r[5]||0)+(r[6]||0);});
   const tR=Object.values(R).reduce((a,b)=>a+b,0),tT=Object.values(T).reduce((a,b)=>a+b,0);
   const rArr=months.map(m=>T[m]>0?Math.round(R[m]/T[m]*100):null);
   const vld=rArr.filter(v=>v!==null),minR=vld.length?Math.min(...vld):0,minI=rArr.findIndex(v=>v===minR),avgR=vld.length?Math.round(vld.reduce((a,b)=>a+b,0)/vld.length):0;
@@ -425,15 +498,15 @@ function filterByIns(ins){
   el.value=el.value===ins?'ALL':ins;
   renderAll();
 }
-function renderKyp2Pa(){const f=gF(),rows=fA(AGG.kyp_to_pa,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const K={},P={};months.forEach(m=>{K[m]=0;P[m]=0;});rows.forEach(r=>{K[r[0]]+=r[3];P[r[0]]+=r[4];});const tK=Object.values(K).reduce((a,b)=>a+b,0),tP=Object.values(P).reduce((a,b)=>a+b,0),lost=tK-tP;$('kyp2pa-cards').innerHTML=mc('Total KYP',tK.toLocaleString(),'b')+mc('Pre-Auth Raised',tP.toLocaleString(),'g')+mc('Lost KYPs',lost.toLocaleString(),'r',pct(lost,tK)+'% not converted')+mc('Conv Rate',pct(tP,tK)+'%','a');mkBar('c-k2p-vol',lbs,[{label:'KYP',data:months.map(m=>K[m]),backgroundColor:'rgba(37,99,235,0.75)',borderRadius:4},{label:'PA',data:months.map(m=>P[m]),backgroundColor:'rgba(5,150,105,0.75)',borderRadius:4}]);mkLine('c-k2p-rate',lbs,[{label:'%',data:months.map(m=>K[m]>0?Math.round(P[m]/K[m]*100):0),borderColor:'#d97706',backgroundColor:'rgba(217,119,6,0.07)',fill:true,borderWidth:2}],{y:{max:100,ticks:{callback:v=>v+'%'}}});}
-function renderPa2Ipd(){const f=gF(),rows=fA(AGG.approval_to_ipd,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const A={},I={};months.forEach(m=>{A[m]=0;I[m]=0;});rows.forEach(r=>{A[r[0]]+=r[3];I[r[0]]+=r[4];});const tA=Object.values(A).reduce((a,b)=>a+b,0),tI=Object.values(I).reduce((a,b)=>a+b,0),lost=tA-tI;$('pa2ipd-cards').innerHTML=mc('PA Approved',tA.toLocaleString(),'b')+mc('IPD Done',tI.toLocaleString(),'g')+mc('Lost Approvals',lost.toLocaleString(),'r',pct(lost,tA)+'% not converted')+mc('Conv Rate',pct(tI,tA)+'%','a');mkBar('c-p2i-vol',lbs,[{label:'Appr',data:months.map(m=>A[m]),backgroundColor:'rgba(37,99,235,0.75)',borderRadius:4},{label:'IPD',data:months.map(m=>I[m]),backgroundColor:'rgba(5,150,105,0.75)',borderRadius:4}]);mkLine('c-p2i-rate',lbs,[{label:'%',data:months.map(m=>A[m]>0?Math.round(I[m]/A[m]*100):0),borderColor:'#7c3aed',backgroundColor:'rgba(124,58,237,0.07)',fill:true,borderWidth:2}],{y:{max:100,ticks:{callback:v=>v+'%'}}});}
+function renderKyp2Pa(){const f=gF(),rows=fA(AGG.kyp_to_pa,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const K={},P={};months.forEach(m=>{K[m]=0;P[m]=0;});rows.forEach(r=>{K[r[0]]+=(r[3]||0);P[r[0]]+=(r[4]||0);});const tK=Object.values(K).reduce((a,b)=>a+b,0),tP=Object.values(P).reduce((a,b)=>a+b,0),lost=tK-tP;$('kyp2pa-cards').innerHTML=mc('Total KYP',tK.toLocaleString(),'b')+mc('Pre-Auth Raised',tP.toLocaleString(),'g')+mc('Lost KYPs',lost.toLocaleString(),'r',pct(lost,tK)+'% not converted')+mc('Conv Rate',pct(tP,tK)+'%','a');mkBar('c-k2p-vol',lbs,[{label:'KYP',data:months.map(m=>K[m]),backgroundColor:'rgba(37,99,235,0.75)',borderRadius:4},{label:'PA',data:months.map(m=>P[m]),backgroundColor:'rgba(5,150,105,0.75)',borderRadius:4}]);mkLine('c-k2p-rate',lbs,[{label:'%',data:months.map(m=>K[m]>0?Math.round(P[m]/K[m]*100):0),borderColor:'#d97706',backgroundColor:'rgba(217,119,6,0.07)',fill:true,borderWidth:2}],{y:{max:100,ticks:{callback:v=>v+'%'}}});}
+function renderPa2Ipd(){const f=gF(),rows=fA(AGG.approval_to_ipd,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const A={},I={};months.forEach(m=>{A[m]=0;I[m]=0;});rows.forEach(r=>{A[r[0]]+=(r[3]||0);I[r[0]]+=(r[4]||0);});const tA=Object.values(A).reduce((a,b)=>a+b,0),tI=Object.values(I).reduce((a,b)=>a+b,0),lost=tA-tI;$('pa2ipd-cards').innerHTML=mc('PA Approved',tA.toLocaleString(),'b')+mc('IPD Done',tI.toLocaleString(),'g')+mc('Lost Approvals',lost.toLocaleString(),'r',pct(lost,tA)+'% not converted')+mc('Conv Rate',pct(tI,tA)+'%','a');mkBar('c-p2i-vol',lbs,[{label:'Appr',data:months.map(m=>A[m]),backgroundColor:'rgba(37,99,235,0.75)',borderRadius:4},{label:'IPD',data:months.map(m=>I[m]),backgroundColor:'rgba(5,150,105,0.75)',borderRadius:4}]);mkLine('c-p2i-rate',lbs,[{label:'%',data:months.map(m=>A[m]>0?Math.round(I[m]/A[m]*100):0),borderColor:'#7c3aed',backgroundColor:'rgba(124,58,237,0.07)',fill:true,borderWidth:2}],{y:{max:100,ticks:{callback:v=>v+'%'}}});}
 
 function renderBizLoss(){
   const f=gF(),rows=fA(AGG.biz_loss,f),months=aM(f),lbs=months.map(m=>ML[m]||m);
   // biz row: [m,d,c, elig(3),elig_no_ipd(4),elig_lost_amt(5), appr(6),appr_no_ipd(7),appr_lost_amt(8), ipd_done(9),ipd_amt(10)]
   const E1={},L1={},LA1={},E2={},L2={},LA2={},ID={},IA={};
   months.forEach(m=>{E1[m]=0;L1[m]=0;LA1[m]=0;E2[m]=0;L2[m]=0;LA2[m]=0;ID[m]=0;IA[m]=0;});
-  rows.forEach(r=>{E1[r[0]]+=r[3];L1[r[0]]+=r[4];LA1[r[0]]+=(r[5]||0);E2[r[0]]+=r[6];L2[r[0]]+=r[7];LA2[r[0]]+=(r[8]||0);ID[r[0]]+=r[9];IA[r[0]]+=(r[10]||0);});
+  rows.forEach(r=>{E1[r[0]]+=(r[3]||0);L1[r[0]]+=(r[4]||0);LA1[r[0]]+=(r[5]||0);E2[r[0]]+=(r[6]||0);L2[r[0]]+=(r[7]||0);LA2[r[0]]+=(r[8]||0);ID[r[0]]+=(r[9]||0);IA[r[0]]+=(r[10]||0);});
   const tE1=Object.values(E1).reduce((a,b)=>a+b,0),tL1=Object.values(L1).reduce((a,b)=>a+b,0),tLA1=Object.values(LA1).reduce((a,b)=>a+b,0);
   const tE2=Object.values(E2).reduce((a,b)=>a+b,0),tL2=Object.values(L2).reduce((a,b)=>a+b,0),tLA2=Object.values(LA2).reduce((a,b)=>a+b,0);
   const tID=Object.values(ID).reduce((a,b)=>a+b,0),tIA=Object.values(IA).reduce((a,b)=>a+b,0);
@@ -468,7 +541,7 @@ function renderBizLoss(){
   const deptAvg=AGG.dept_avg_amt||{};
   const allDepts=[...new Set([...Object.keys(fin),...Object.keys(deptAvg)])].sort((a,b)=>(fin[b]?fin[b].total:0)-(fin[a]?fin[a].total:0));
   const catLbs=allDepts.map(d=>SH[d]||d);
-  const catIPD=allDepts.map(d=>fin[d]?Math.round(fin[d].total):0);
+  const catIPD=allDepts.map(d=>fin[d]&&fin[d].total>0?Math.round(fin[d].total):(AGG.dept_avg_amt&&AGG.dept_avg_amt[d]?(AGG.dept_avg_amt[d]*(fin[d]?fin[d].n:0)):0));
   const catAvg=allDepts.map(d=>deptAvg[d]||0);
   mkHBar('c-biz-cat',catLbs,[
     {label:'IPD Done',data:catIPD,backgroundColor:allDepts.map(d=>DC[d]||'#6b7280'),borderRadius:4}
