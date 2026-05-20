@@ -294,132 +294,176 @@ function parseAmt(s){if(!s)return null;const n=parseFloat(s.replace(/[^\d.]/g,''
 // ── PROCESS SHEETS ────────────────────────────────────
 function processSheets(kR,pR,iR){
   const kM={},pM={},iSet=new Set(),iAmt={},iDept={},iDt={};
-  kR.forEach(r=>{const d=parseDt(r['KYP Requested Date']);if(!d)return;const lid=r['Lead Prospect ID'];if(!kM[lid])kM[lid]={date:d,month:mStr(d),year:String(d.getFullYear()),pcs:r['KYP Requested By']||'',coverage:r['Treatment Coverage']||'',dept:nd(r['Department']),city:r['City Bucket']||''};});
-  pR.forEach(r=>{const d=parseDt(r['Datetime of Pre-Auth Requested Date']);if(!d)return;const lid=r['Lead Prospect ID'];if(!pM[lid])pM[lid]={date:d,month:mStr(d),status:r['Pre-Auth Status']||r['Pre Auth Status']||r['Status']||'',dept:nd(r['Select Department']||r['Department']||''),city:r['City Bucket']||r['City']||''};});
-  // Fix scientific notation Lead IDs (e.g. 2.65404E+17 -> full string)
-  // Build name->leadId lookup — PA sheet first (highest IPD coverage ~97%), then KYP
+
+  // Build name->lid map from PA first (best coverage), then KYP
   const nameToLid={};
-  // Helper: extract name from a row trying all possible column name variants
-  // Google Sheets CSV may render apostrophe differently across exports
-  function getName(r){
-    return(r["Patient’s Name"]||r["Patient's Name"]||r["Patients Name"]||
-           r['Patient Name']||r["patient's name"]||r['patient name']||'').trim().toLowerCase();
-  }
-  function getLid(r){return(r['Lead Prospect ID']||r['lead prospect id']||'').trim();}
-  // PA sheet first - all IPD patients went through pre-auth (~97% coverage)
-  pR.forEach(r=>{const n=getName(r),l=getLid(r);if(n&&l)nameToLid[n]=l;});
-  // KYP sheet supplements remaining
-  kR.forEach(r=>{const n=getName(r),l=getLid(r);if(n&&l&&!nameToLid[n])nameToLid[n]=l;});
-  function fixLid(raw,patientName){
-    // Always try name lookup first — avoids all precision issues
-    const name=(patientName||'').trim().toLowerCase();
-    if(name&&nameToLid[name]) return nameToLid[name];
-    // Fallback: if ID looks fine (no scientific notation) use it directly
+  function getName(r){return(r["Patient's Name"]||r["Patients Name"]||r['Patient Name']||'').trim().toLowerCase();}
+  pR.forEach(r=>{const n=getName(r),l=(r['Lead Prospect ID']||'').trim();if(n&&l)nameToLid[n]=l;});
+  kR.forEach(r=>{const n=getName(r),l=(r['Lead Prospect ID']||'').trim();if(n&&l&&!nameToLid[n])nameToLid[n]=l;});
+
+  // Fix scientific notation Lead IDs using name lookup
+  function fixLid(raw,name){
+    const nm=(name||'').trim().toLowerCase();
+    if(nm&&nameToLid[nm])return nameToLid[nm];
     if(!raw)return'';const s=raw.trim();
-    if(!s.toUpperCase().includes('E+')) return s;
-    // Last resort: best-effort conversion (loses last 2-3 digits)
+    if(!s.toUpperCase().includes('E+'))return s;
     try{return String(Math.round(parseFloat(s)));}catch(e){return s;}
   }
-  iR.forEach(r=>{
-    const lid=fixLid(r['Lead ID'],getName(r)||r['Patient Name']||'');if(!lid)return;iSet.add(lid);
-    const amt=parseAmt(r['Approval Amount']);if(amt)iAmt[lid]=amt;
-    const dept=nd(r['Category']);if(dept)iDept[lid]=dept;
-    // Use DOD (Date of Discharge) — more accurate than DOA for completed stays
-    const dodStr=r['DOD']||r['Dod']||r['dod']||'';
-    const dodDate=parseDt(dodStr);
-    if(dodDate&&dodDate.getFullYear()>=2024) iDt[lid]=dodDate;
-    else {
-      // Fallback to DOA if no DOD
-      const doaStr=r['DOA']||r['Doa']||'';
-      const doaDate=parseDt(doaStr);
-      if(doaDate&&doaDate.getFullYear()>=2024) iDt[lid]=doaDate;
-    }
+
+  kR.forEach(r=>{
+    const d=parseDt(r['KYP Requested Date']);if(!d)return;
+    const lid=(r['Lead Prospect ID']||'').trim();
+    if(!kM[lid])kM[lid]={date:d,month:mStr(d),year:String(d.getFullYear()),
+      pcs:r['KYP Requested By']||'',coverage:r['Treatment Coverage']||'',
+      dept:nd(r['Department']),city:r['City Bucket']||''};
   });
+
+  pR.forEach(r=>{
+    const d=parseDt(r['Datetime of Pre-Auth Requested Date']||r['Pre-Auth Date']||'');if(!d)return;
+    const lid=(r['Lead Prospect ID']||'').trim();
+    if(!pM[lid])pM[lid]={date:d,month:mStr(d),
+      status:r['Pre-Auth Status']||r['Status']||'',
+      dept:nd(r['Select Department']||r['Department']||''),
+      city:r['City Bucket']||''};
+  });
+
+  iR.forEach(r=>{
+    const lid=fixLid(r['Lead ID'],r['Patient Name']||r["Patient's Name"]||'');
+    if(!lid)return;
+    iSet.add(lid);
+    const amt=parseAmt(r['Approval Amount']);if(amt)iAmt[lid]=amt;
+    const dept=nd(r['Category']||'');if(dept)iDept[lid]=dept;
+    // Use DOD (discharge date) first, fallback to DOA
+    const dodStr=r['DOD']||r['Dod']||'';
+    const doaStr=r['DOA']||r['Doa']||'';
+    const dod=parseDt(dodStr)||parseDt(doaStr);
+    if(dod&&dod.getFullYear()>=2024)iDt[lid]=dod;
+  });
+
   const MONTHS=[...new Set(Object.values(kM).map(r=>r.month))].sort();
   const DEPTS=[...new Set(Object.values(kM).map(r=>r.dept))].filter(Boolean).sort();
   const CITIES=[...new Set(Object.values(kM).map(r=>r.city))].filter(Boolean).sort();
   const YEARS=[...new Set(MONTHS.map(m=>m.split('-')[0]))].sort();
-  const apS=new Set(['Approved','Approved after Rejection']);
-  const elS=new Set(['Eligible under insurance','Need Pre-Approval']);
-  // Dept avg amounts
-  // Hardcoded dept avg approval amounts (from historical IPD data — ₹ values)
-  // Used to estimate financial loss for leads that didn't convert to IPD
+  const apS=new Set(['Approved','Approved after Rejection','Enhancement Approved']);
+
+  // Hardcoded dept avg amounts — always available as fallback
   const deptAvg={
     'AESTHETICS / PLASTIC SURGERY':100021,'ENT':136517,'GYNAECOLOGY':86072,
     'LAPAROSCOPY':283950,'ORTHOPAEDICS':239496,'PROCTOLOGY':80480,
     'UROLOGY':43951,'VASCULAR':135430,'KIDNEY STONE':75596,
     'GENERAL SURGERY':84576,'INTERNAL MEDICINE':30040
   };
-  // Also build from live IPD amounts if available (overrides hardcoded when data is good)
+  // Override with live amounts if sufficient data
   const deptAcc={};
   Object.entries(iAmt).forEach(([lid,amt])=>{
-    if(amt>1000&&amt<5000000){ // sanity check: ₹1K to ₹50L range
+    if(amt>1000&&amt<5000000){
       const dept=iDept[lid]||(kM[lid]&&kM[lid].dept)||'';
       if(dept){if(!deptAcc[dept])deptAcc[dept]=[];deptAcc[dept].push(amt);}
     }
   });
-  // Only override hardcoded if we have sufficient live samples
   Object.entries(deptAcc).forEach(([d,v])=>{if(v.length>=10)deptAvg[d]=Math.round(v.reduce((a,b)=>a+b,0)/v.length);});
+
   const t1={},t2={},t3={},t4={},t5={},t6={},lcA={},pcsS={};
+
   Object.entries(kM).forEach(([lid,r])=>{
     const kk=r.month+'|'+r.dept+'|'+r.city;
     t1[kk]=(t1[kk]||0)+1;
     if(!t4[kk])t4[kk]=[0,0];t4[kk][0]++;if(pM[lid])t4[kk][1]++;
-    const p=pM[lid];const inI=iSet.has(lid);const amt=iAmt[lid]||0;const est=deptAvg[r.dept]||0;
+    const p=pM[lid];const inI=iSet.has(lid);
+    const amt=iAmt[lid]||0;const est=deptAvg[r.dept]||0;
     if(p&&apS.has(p.status)){if(!t5[kk])t5[kk]=[0,0];t5[kk][0]++;if(inI)t5[kk][1]++;}
-    // Business loss: [elig,elig_no_ipd,elig_lost_amt, appr,appr_no_ipd,appr_lost_amt, ipd_done,ipd_amt]
-    if(elS.has(r.coverage)){if(!t6[kk])t6[kk]=[0,0,0,0,0,0,0,0];t6[kk][0]++;if(!inI){t6[kk][1]++;t6[kk][2]+=est;}}
-    if(p&&apS.has(p.status)){if(!t6[kk])t6[kk]=[0,0,0,0,0,0,0,0];t6[kk][3]++;if(!inI){t6[kk][4]++;t6[kk][5]+=est;}else{t6[kk][6]++;t6[kk][7]+=amt;}}
-    const pc=r.pcs;if(pc){if(!pcsS[pc])pcsS[pc]={kyp:0,ipd:0,depts:{}};pcsS[pc].kyp++;pcsS[pc].depts[r.dept]=(pcsS[pc].depts[r.dept]||0)+1;if(inI)pcsS[pc].ipd++;}
-    // KYP-anchored lifecycle (correct dept order)
-    const lk=r.month+'|'+r.dept;
-    if(!lcA[lk])lcA[lk]={l1:[],l2:[],l3:[]};
+    const pc=r.pcs;
+    if(pc){if(!pcsS[pc])pcsS[pc]={kyp:0,ipd:0,depts:{}};pcsS[pc].kyp++;pcsS[pc].depts[r.dept]=(pcsS[pc].depts[r.dept]||0)+1;if(inI)pcsS[pc].ipd++;}
+    // Lifecycle: KYP-anchored
+    const lk=r.month+'|'+r.dept;if(!lcA[lk])lcA[lk]={l1:[],l2:[],l3:[]};
     if(p){const lg=(p.date-r.date)/864e5;if(lg>=0&&lg<=180)lcA[lk].l1.push(lg);}
     if(p&&iDt[lid]&&apS.has(p.status)){const lg=(iDt[lid]-p.date)/864e5;if(lg>=0&&lg<=365)lcA[lk].l2.push(lg);}
     if(iDt[lid]){const lg=(iDt[lid]-r.date)/864e5;if(lg>=0&&lg<=365)lcA[lk].l3.push(lg);}
   });
-  Object.values(pM).forEach(r=>{const k=r.month+'|'+r.dept+'|'+r.city;t2[k]=(t2[k]||0)+1;if(!t3[k])t3[k]=[0,0,0,0];const s=r.status;if(apS.has(s))t3[k][0]++;else if(s==='Rejected')t3[k][1]++;else if(s==='Case Cancelled'||s==='Duplicate')t3[k][2]++;else t3[k][3]++;});
-  const mk3=(t,fn)=>Object.entries(t).map(([k,v])=>{const p=k.split('|');return fn(p[0],p[1],p[2],v);});
-  // Debug logging to diagnose live data issues
-  console.log('DEBUG processSheets: pR rows='+pR.length+', kR rows='+kR.length+', iR rows='+iR.length);
-  console.log('DEBUG pM size='+Object.keys(pM).length+', nameToLid size='+Object.keys(nameToLid).length);
-  console.log('DEBUG iSet size='+iSet.size);
-  if(pR.length>0){const samplePA=pR[0];console.log('DEBUG PA row keys:',Object.keys(samplePA).slice(0,8));}
-  if(kR.length>0){const sampleKYP=kR[0];console.log('DEBUG KYP row keys:',Object.keys(sampleKYP).slice(0,8));}
-  if(Object.keys(t3).length>0){const firstK=Object.keys(t3)[0];console.log('DEBUG t3 sample:',firstK,JSON.stringify(t3[firstK]));}
-  const wavg=a=>a.length?Math.round(a.reduce((x,y)=>x+y,0)/a.length*10)/10:null;
+
+  // PA status monthly
+  Object.values(pM).forEach(r=>{
+    const k=r.month+'|'+r.dept+'|'+r.city;
+    t2[k]=(t2[k]||0)+1;
+    if(!t3[k])t3[k]=[0,0,0,0];
+    const s=r.status;
+    if(apS.has(s))t3[k][0]++;
+    else if(s==='Rejected')t3[k][1]++;
+    else if(s==='Case Cancelled'||s==='Duplicate')t3[k][2]++;
+    else t3[k][3]++;
+  });
+
+  // Business loss: PA-anchored (all PA leads = insurance pipeline)
+  const seenPA=new Set();
+  pR.forEach(r=>{
+    const lid=(r['Lead Prospect ID']||'').trim();if(seenPA.has(lid))return;seenPA.add(lid);
+    const pRec=pM[lid];if(!pRec)return;
+    const inI=iSet.has(lid);
+    const kRec=kM[lid];
+    const dept=kRec?kRec.dept:nd(r['Select Department']||'');
+    const city=kRec?kRec.city:(r['City Bucket']||'');
+    const month=kRec?kRec.month:pRec.month;
+    const est=deptAvg[dept]||0;
+    const amt=iAmt[lid]||0;
+    const kk=month+'|'+dept+'|'+city;
+    if(!t6[kk])t6[kk]=[0,0,0,0,0,0,0,0];
+    t6[kk][0]++;
+    if(inI){t6[kk][6]++;t6[kk][7]+=amt;}else{t6[kk][1]++;t6[kk][2]+=est;}
+    if(apS.has(pRec.status)){t6[kk][3]++;if(!inI){t6[kk][4]++;t6[kk][5]+=est;}}
+  });
+
   // Insurer aggregations
   const insSum={};const insRejByMonth={};
+  const INS_MAP={'New India Assurance Co. Ltd.':'New India','Star Health & Allied Insurance Co. Ltd.':'Star Health','ICICI Lombard General Insurance Co. Ltd.':'ICICI Lombard','Care Health Insurance Ltd.':'Care Health','Oriental Insurance Co. Ltd.':'Oriental','Aditya Birla Health Insurance Co. Ltd.':'Aditya Birla','MAX Bupa Health Insurance Company Ltd.':'Max Bupa','United India Insurance Co. Ltd.':'United India','Bajaj Allianz General Insurance Co. Ltd.':'Bajaj Allianz','Tata AIG General Insurance Co. Ltd.':'Tata AIG','National Insurance Co. Ltd.':'National','Reliance General Insurance Co. Ltd.':'Reliance','HDFC ERGO General Insurance Co. Ltd.':'HDFC ERGO','Go Digit General Insurance Ltd.':'Go Digit','Niva Bupa Health Insurance Company Limited':'Niva Bupa','Manipal Cigna Health Insurance Company Limited':'Manipal Cigna','Acko General Insurance Ltd.':'Acko','SBI General Insurance Co. Ltd.':'SBI General','Future Generali India Insurance Co. Ltd.':'Future Generali'};
+  function sIns(s){s=(s||'').trim();return INS_MAP[s]||s.substring(0,20)||'Unknown';}
   pR.forEach(r=>{
-    const ins=r['Insurance Company Name']||'Unknown';
-    const insS=(function(s){s=(s||'').trim();const m={'New India Assurance Co. Ltd.':'New India','Star Health & Allied Insurance Co. Ltd.':'Star Health','ICICI Lombard General Insurance Co. Ltd.':'ICICI Lombard','Care Health Insurance Ltd.':'Care Health','Oriental Insurance Co. Ltd.':'Oriental','Aditya Birla Health Insurance Co. Ltd.':'Aditya Birla','MAX Bupa Health Insurance Company Ltd.':'Max Bupa','United India Insurance Co. Ltd.':'United India','Bajaj Allianz General Insurance Co. Ltd.':'Bajaj Allianz','Tata AIG General Insurance Co. Ltd.':'Tata AIG','National Insurance Co. Ltd.':'National','Reliance General Insurance Co. Ltd.':'Reliance','HDFC ERGO General Insurance Co. Ltd.':'HDFC ERGO','Go Digit General Insurance Ltd.':'Go Digit','Niva Bupa Health Insurance Company Limited':'Niva Bupa','Manipal Cigna Health Insurance Company Limited':'Manipal Cigna','Acko General Insurance Ltd.':'Acko','SBI General Insurance Co. Ltd.':'SBI General','Future Generali India Insurance Co. Ltd.':'Future Generali'};return m[s]||s.substring(0,20)||'Unknown';})(ins);
-    if(insS==='Unknown'||insS==='-No Value-')return;
-    const d=parseDt(r['Datetime of Pre-Auth Requested Date']);if(!d)return;
+    const ins=sIns(r['Insurance Company Name']||'');if(!ins||ins==='Unknown')return;
+    const d=parseDt(r['Datetime of Pre-Auth Requested Date']||'');if(!d)return;
     const mo=mStr(d);const st=r['Pre-Auth Status']||'';
-    const isAppr=['Approved','Approved after Rejection','Enhancement Approved'].includes(st);
-    const isRej=st==='Rejected';
-    const isCanc=['Case Cancelled','Duplicate'].includes(st);
-    // In Progress = all open/pending statuses
-    // Overall ins summary
-    if(!insSum[insS])insSum[insS]={ins:insS,total:0,approved:0,rejected:0,cancelled:0,inp:0};
-    insSum[insS].total++;
-    if(isAppr)insSum[insS].approved++;
-    else if(isRej)insSum[insS].rejected++;
-    else if(isCanc)insSum[insS].cancelled++;
-    else insSum[insS].inp++;
-    // Store with dept+city: [month, ins, dept, city, appr, rej, canc, inp]
-    const dept2=nd(r['Select Department']||'');
-    const city2=(r['City Bucket']||'').trim();
-    const mk=mo+'|'+insS+'|'+dept2+'|'+city2;
-    if(!insRejByMonth[mk])insRejByMonth[mk]=[mo,insS,dept2,city2,0,0,0,0];
-    if(isAppr)insRejByMonth[mk][4]++;
-    else if(isRej)insRejByMonth[mk][5]++;
-    else if(isCanc)insRejByMonth[mk][6]++;
-    else insRejByMonth[mk][7]++;
+    const dept2=nd(r['Select Department']||'');const city2=(r['City Bucket']||'').trim();
+    const isA=apS.has(st),isR=st==='Rejected',isC=st==='Case Cancelled'||st==='Duplicate';
+    if(!insSum[ins])insSum[ins]={ins,total:0,approved:0,rejected:0,cancelled:0,inp:0};
+    insSum[ins].total++;if(isA)insSum[ins].approved++;else if(isR)insSum[ins].rejected++;else if(isC)insSum[ins].cancelled++;else insSum[ins].inp++;
+    const mk=mo+'|'+ins+'|'+dept2+'|'+city2;
+    if(!insRejByMonth[mk])insRejByMonth[mk]=[mo,ins,dept2,city2,0,0,0,0];
+    if(isA)insRejByMonth[mk][4]++;else if(isR)insRejByMonth[mk][5]++;else if(isC)insRejByMonth[mk][6]++;else insRejByMonth[mk][7]++;
   });
   const insSumArr=Object.values(insSum).filter(r=>r.total>=5).map(r=>({...r,rej_rate:Math.round(r.rejected/r.total*1000)/10})).sort((a,b)=>b.rejected-a.rejected);
   const insRejM=Object.values(insRejByMonth);
-  const fin_by_dept={};Object.entries(iAmt).forEach(([lid,amt])=>{const d=iDept[lid]||'Unknown';if(!fin_by_dept[d])fin_by_dept[d]={n:0,total:0};fin_by_dept[d].n++;fin_by_dept[d].total+=amt;});
+
+  const mk3=(t,fn)=>Object.entries(t).map(([k,v])=>{const p=k.split('|');return fn(p[0],p[1],p[2],v);});
+  const wavg=a=>a.length?Math.round(a.reduce((x,y)=>x+y,0)/a.length*10)/10:null;
+
+  const fin_by_dept={};
+  Object.entries(iAmt).forEach(([lid,amt])=>{
+    const d=iDept[lid]||(kM[lid]&&kM[lid].dept)||'Unknown';
+    if(!fin_by_dept[d])fin_by_dept[d]={n:0,total:0};
+    fin_by_dept[d].n++;fin_by_dept[d].total+=amt;
+  });
+
+  // DOD monthly counts
+  const dodByMonth={};
+  iR.forEach(r=>{
+    const lid=fixLid(r['Lead ID'],r['Patient Name']||'');if(!lid)return;
+    const dodStr=r['DOD']||r['Dod']||r['DOA']||r['Doa']||'';
+    const d=parseDt(dodStr);if(d&&d.getFullYear()>=2024){
+      const mo=mStr(d);dodByMonth[mo]=(dodByMonth[mo]||0)+1;
+    }
+  });
+
+  // PA approved by month
+  const paApprByMonth={};const paSeen=new Set();
+  pR.forEach(r=>{
+    const lid=(r['Lead Prospect ID']||'').trim();if(paSeen.has(lid))return;
+    const d=parseDt(r['Datetime of Pre-Auth Requested Date']||'');if(!d)return;
+    const st=r['Pre-Auth Status']||'';
+    if(apS.has(st)){paSeen.add(lid);const mo=mStr(d);paApprByMonth[mo]=(paApprByMonth[mo]||0)+1;}
+  });
+
+  console.log('DEBUG processSheets: pM='+Object.keys(pM).length+' iSet='+iSet.size+' nameToLid='+Object.keys(nameToLid).length);
+  if(pR.length>0)console.log('DEBUG PA keys:',Object.keys(pR[0]).slice(0,6));
+  if(iR.length>0)console.log('DEBUG IPD keys:',Object.keys(iR[0]).slice(0,6));
+
   return{months:MONTHS,depts:DEPTS,cities:CITIES,years:YEARS,
     kyp_monthly:mk3(t1,(m,d,c,n)=>[m,d,c,n]),
     pa_monthly:mk3(t2,(m,d,c,n)=>[m,d,c,n]),
@@ -431,11 +475,11 @@ function processSheets(kR,pR,iR){
     lifecycle3:Object.entries(lcA).map(([k,v])=>{const p=k.split('|');return{month:p[0],dept:p[1],l1:wavg(v.l1),l1n:v.l1.length,l2:wavg(v.l2),l2n:v.l2.length,l3:wavg(v.l3),l3n:v.l3.length};}),
     fin_by_dept,dept_avg_amt:deptAvg,
     total_ipd_amt:Object.values(iAmt).reduce((a,b)=>a+b,0),
-    ipd_total:iSet.size,
-    ipd_amt_count:Object.keys(iAmt).length,
-    ins_summary:insSumArr,
-    ins_rej_monthly:insRejM,
-    insurers:[...new Set(insRejM.map(r=>r[1]))].filter(Boolean).sort()};
+    ipd_total:iSet.size,ipd_amt_count:Object.keys(iAmt).length,
+    ins_summary:insSumArr,ins_rej_monthly:insRejM,
+    insurers:[...new Set(insRejM.map(r=>r[1]))].filter(Boolean).sort(),
+    doa_monthly_ipd:dodByMonth,
+    pa_appr_by_month:paApprByMonth};
 }
 
 // ── FETCH ─────────────────────────────────────────────
@@ -627,7 +671,7 @@ function setP2iAnchor(mode){
   $('btn-doa-anchor').style.borderColor=isKyp?'#e5e7eb':'#7c3aed';
   const note=$('anchor-note');if(note)note.textContent=isKyp?'Anchored on KYP month — shows pipeline efficiency (did this month’s leads convert?)':'PA Approved (by approval date) vs IPD Done (by discharge date) — gap = approvals pending surgery, may convert next month';
   const title=$('p2i-vol-title');if(title)title.textContent=isKyp?'PA Approved vs IPD Done':'PA Approved vs Discharges (DOD)';
-  const sub=$('p2i-vol-sub');if(sub)sub.textContent=isKyp?'Anchored on KYP month':'PA by approval date · Surgeries by admission date (DOA)';
+  const sub=$('p2i-vol-sub');if(sub)sub.textContent=isKyp?'Anchored on KYP month':'PA by approval date · Discharges by discharge date (DOD)';
   renderPa2Ipd();
 }
 function renderPa2Ipd(){
@@ -707,7 +751,14 @@ function renderBizLoss(){
   const deptAvg=AGG.dept_avg_amt||{};
   const allDepts=[...new Set([...Object.keys(fin),...Object.keys(deptAvg)])].sort((a,b)=>(fin[b]?fin[b].total:0)-(fin[a]?fin[a].total:0));
   const catLbs=allDepts.map(d=>SH[d]||d);
-  const catIPD=allDepts.map(d=>fin[d]&&fin[d].total>0?Math.round(fin[d].total):(AGG.dept_avg_amt&&AGG.dept_avg_amt[d]?(AGG.dept_avg_amt[d]*(fin[d]?fin[d].n:0)):0));
+  // Use actual amounts if available, else estimate from dept avg × IPD done count
+  const ipd_by_dept={};
+  (AGG.biz_loss||[]).forEach(r=>{if(!ipd_by_dept[r[1]])ipd_by_dept[r[1]]=0;ipd_by_dept[r[1]]+=(r[9]||0);});
+  const catIPD=allDepts.map(d=>{
+    if(fin[d]&&fin[d].total>0)return Math.round(fin[d].total);
+    const n=ipd_by_dept[d]||0;
+    return n>0?(deptAvg[d]||0)*n:0;
+  });
   const catAvg=allDepts.map(d=>deptAvg[d]||0);
   mkHBar('c-biz-cat',catLbs,[
     {label:'IPD Done',data:catIPD,backgroundColor:allDepts.map(d=>DC[d]||'#6b7280'),borderRadius:4}
