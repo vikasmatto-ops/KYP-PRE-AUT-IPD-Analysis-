@@ -524,7 +524,7 @@ async function loadSheets(){
     $('last-upd').textContent='Live \u00B7 '+new Date().toLocaleTimeString();
     setLive('dg','Live \u00B7 Google Sheets');
   }catch(e){
-    console.error(e);AGG=FB;rebuildFilters();renderAll();
+    console.error('loadSheets error:',e.message,e);AGG=FB;rebuildFilters();renderAll();
     $('last-upd').textContent='Cached snapshot · live fetch failed';setLive('da','Cached data – live fetch failed');
   }
   setLo(false);btn.disabled=false;btn.textContent='\u21BA Refresh Live';
