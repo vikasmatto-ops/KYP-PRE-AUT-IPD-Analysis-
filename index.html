@@ -503,12 +503,13 @@ function processSheets(kR,pR,iR){
 // ── FETCH ─────────────────────────────────────────────
 async function fetchSheet(gid){
   const url=BASE+'?output=csv&gid='+gid;
-  try{const r=await fetch(url,{cache:'no-cache'});if(!r.ok)throw new Error('HTTP '+r.status);return parseCSV(await r.text());}
-  catch(e){
-    const p='https://corsproxy.io/?'+encodeURIComponent(url);
-    const r2=await fetch(p,{cache:'no-cache'});if(!r2.ok)throw new Error('proxy HTTP '+r2.status);
-    return parseCSV(await r2.text());
-  }
+  const ctrl=new AbortController();
+  setTimeout(()=>ctrl.abort(),8000);
+  const r=await fetch(url,{signal:ctrl.signal});
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  const t=await r.text();
+  if(!t||t.trim().startsWith('<')||t.length<100)throw new Error('Bad response');
+  return parseCSV(t);
 }
 async function loadSheets(){
   const btn=$('btn-ref');btn.disabled=true;btn.textContent='\u23F3 Loading...';
@@ -523,7 +524,7 @@ async function loadSheets(){
     setLive('dg','Live \u00B7 Google Sheets');
   }catch(e){
     console.error(e);AGG=FB;rebuildFilters();renderAll();
-    $('last-upd').textContent='Local snapshot';setLive('da','Local data');
+    $('last-upd').textContent='Cached snapshot · live fetch failed';setLive('da','Cached data – live fetch failed');
   }
   setLo(false);btn.disabled=false;btn.textContent='\u21BA Refresh Live';
 }
