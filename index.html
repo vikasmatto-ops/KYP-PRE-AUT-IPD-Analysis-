@@ -269,6 +269,7 @@ document.getElementById('sidebar').addEventListener('click',e=>{
   renderAll();
 });
 $('btn-ref').addEventListener('click',loadSheets);
+loadSheets();
 $('btn-rst').addEventListener('click',()=>{['f-year','f-dept','f-city','f-ins','f-month'].forEach(id=>{const el=$(id);if(el)el.value='ALL';});renderAll();});
 ['f-year','f-dept','f-city','f-ins','f-month'].forEach(id=>{const el=$(id);if(el)el.addEventListener('change',renderAll);});
 
