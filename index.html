@@ -575,6 +575,94 @@ function mkBar(id,lbs,dss,ex){const ctx=$(id);if(!ctx)return;if(CH[id])CH[id].de
 function mkHBar(id,lbs,dss,h,money){const ctx=$(id);if(!ctx)return;if(CH[id])CH[id].destroy();ctx.parentElement.style.height=(h||Math.max(lbs.length*52+80,180))+'px';const xfmt=v=>money?(v>=1000?fmtCr(v):'₹'+v):v.toLocaleString();CH[id]=new Chart(ctx,{type:'bar',data:{labels:lbs,datasets:dss},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,callbacks:{label:c=>{const v=c.parsed.x;return c.dataset.label+': '+(money?(v>=1000?fmtCr(v):'₹'+v.toLocaleString()):v.toLocaleString());}}}},scales:{x:{grid:{color:'#f3f4f6'},ticks:{font:{size:11},callback:xfmt},beginAtZero:true},y:{grid:{display:false},ticks:{font:{size:11}}}}}});}
 
 // ── RENDER FUNCTIONS ─────────────────────────────────
+function renderAll(){
+  const t=TAB;
+  if(t==='kyp')renderKYP();
+  else if(t==='pa')renderPA();
+  else if(t==='approval')renderApproval();
+  else if(t==='rejection')renderRejection();
+  else if(t==='kyp2pa')renderKyp2Pa();
+  else if(t==='pa2ipd')renderPa2Ipd();
+  else if(t==='bizloss')renderBizLoss();
+  else if(t==='champs'||t==='under')renderPCS();
+  else if(t==='lifecycle')renderLifecycle();
+  updateBadges();
+}
+function updateBadges(){
+  const f=gF(),months=aM(f);
+  const kyp=fA(AGG.kyp_monthly,f).reduce((a,r)=>a+(r[3]||0),0);
+  const pa=fA(AGG.pa_monthly,f).reduce((a,r)=>a+(r[3]||0),0);
+  const st=fA(AGG.pa_status_monthly,f);
+  const appr=st.reduce((a,r)=>a+(r[3]||0),0);
+  const rej=st.reduce((a,r)=>a+(r[4]||0),0);
+  const tot=st.reduce((a,r)=>a+(r[3]||0)+(r[4]||0)+(r[5]||0)+(r[6]||0),0);
+  const k2p=fA(AGG.kyp_to_pa,f);
+  const tK=k2p.reduce((a,r)=>a+(r[3]||0),0),tP=k2p.reduce((a,r)=>a+(r[4]||0),0);
+  const p2i=fA(AGG.approval_to_ipd,f);
+  const tA=p2i.reduce((a,r)=>a+(r[3]||0),0),tI=p2i.reduce((a,r)=>a+(r[4]||0),0);
+  const b=id=>$(id);
+  if(b('b-kyp'))b('b-kyp').textContent=kyp.toLocaleString();
+  if(b('b-pa'))b('b-pa').textContent=pa.toLocaleString();
+  if(b('b-appr'))b('b-appr').textContent=tot>0?pct(appr,tot)+'%':'—';
+  if(b('b-rej'))b('b-rej').textContent=tot>0?pct(rej,tot)+'%':'—';
+  if(b('b-k2p'))b('b-k2p').textContent=tK>0?pct(tP,tK)+'%':'—';
+  if(b('b-p2i'))b('b-p2i').textContent=tA>0?pct(tI,tA)+'%':'—';
+  if(b('b-champ')&&AGG.pcs_list)b('b-champ').textContent=(AGG.pcs_list[0]||{rate:0}).rate+'%';
+  if(b('b-under')&&AGG.pcs_list)b('b-under').textContent=(AGG.pcs_list[AGG.pcs_list.length-1]||{rate:0}).rate+'%';
+  if(b('b-lc')&&AGG.lifecycle3)b('b-lc').textContent=AGG.lifecycle3.length+' rows';
+}
+function renderPCS(){
+  const isChamp=TAB==='champs';
+  const list=AGG.pcs_list||[];
+  const top10=isChamp?list.slice(0,10):list.slice(-10).reverse();
+  const avatars=isChamp?AT:AB;
+  const cardsId=isChamp?'champs-cards':'under-cards';
+  const gridId=isChamp?'champs-grid':'under-grid';
+  const avg=list.length?Math.round(list.reduce((a,r)=>a+r.rate,0)/list.length):0;
+  const tot=list.reduce((a,r)=>a+r.kyp,0);
+  $(cardsId).innerHTML=mc('Total PCS',list.length.toLocaleString(),'b')+mc('Avg Conv Rate',avg+'%','p')+mc('Total KYPs',tot.toLocaleString(),'g')+mc(isChamp?'Top Rate':'Bottom Rate',(top10[0]||{rate:0}).rate+'%',isChamp?'g':'r');
+  $(gridId).innerHTML=top10.map((p,i)=>{
+    const col=DC[p.dept]||'#7c3aed';
+    const bg=col+'22';
+    return`<div class="pcs-card"><div class="avatar" style="background:${bg}">${avatars[i]||'⭐'}</div><div class="pcs-info"><div class="pcs-name">${p.name}</div><div class="pcs-meta">${SH[p.dept]||p.dept} · ${p.kyp} KYPs · ${p.ipd} IPDs</div><div class="pcs-bar"><div class="pcs-bar-fill" style="width:${p.rate}%;background:${col}"></div></div></div><div class="pcs-rate" style="color:${col}">${p.rate}%</div></div>`;
+  }).join('');
+}
+function renderLifecycle(){
+  const f=gF();
+  const rows=(AGG.lifecycle3||[]).filter(r=>{
+    if(f.year!=='ALL'&&!r.month.startsWith(f.year))return false;
+    if(f.month!=='ALL'&&r.month!==f.month)return false;
+    if(f.dept!=='ALL'&&r.dept!==f.dept)return false;
+    return true;
+  });
+  const depts=[...new Set(rows.map(r=>r.dept))].filter(Boolean).sort();
+  const avgL1=v=>v.filter(r=>r.l1!==null).reduce((a,r,_,arr)=>a+r.l1/arr.length,0);
+  const avgL2=v=>v.filter(r=>r.l2!==null).reduce((a,r,_,arr)=>a+r.l2/arr.length,0);
+  const avgL3=v=>v.filter(r=>r.l3!==null).reduce((a,r,_,arr)=>a+r.l3/arr.length,0);
+  const al1=avgL1(rows),al2=avgL2(rows),al3=avgL3(rows);
+  $('lc-cards').innerHTML=
+    `<div class="lc-leg"><div class="lc-leg-title" style="color:#2563eb">KYP → Pre-Auth</div><div class="lc-leg-val" style="color:#2563eb">${al1.toFixed(1)}d</div><div class="lc-leg-sub">avg days</div></div>`+
+    `<div class="lc-leg"><div class="lc-leg-title" style="color:#d97706">PA → IPD</div><div class="lc-leg-val" style="color:#d97706">${al2.toFixed(1)}d</div><div class="lc-leg-sub">avg days</div></div>`+
+    `<div class="lc-leg"><div class="lc-leg-title" style="color:#059669">KYP → IPD</div><div class="lc-leg-val" style="color:#059669">${al3.toFixed(1)}d</div><div class="lc-leg-sub">total journey</div></div>`;
+  const gw=$('lc-gw');if(gw)gw.style.height=Math.max(depts.length*52+80,180)+'px';
+  mkHBar('c-lc-g',depts.map(d=>SH[d]||d),[
+    {label:'KYP→PA',data:depts.map(d=>{const r=rows.filter(x=>x.dept===d);return r.length?Math.round(avgL1(r)*10)/10:0;}),backgroundColor:'rgba(37,99,235,0.75)',borderRadius:3},
+    {label:'PA→IPD',data:depts.map(d=>{const r=rows.filter(x=>x.dept===d);return r.length?Math.round(avgL2(r)*10)/10:0;}),backgroundColor:'rgba(217,119,6,0.75)',borderRadius:3},
+    {label:'KYP→IPD',data:depts.map(d=>{const r=rows.filter(x=>x.dept===d);return r.length?Math.round(avgL3(r)*10)/10:0;}),backgroundColor:'rgba(5,150,105,0.75)',borderRadius:3},
+  ]);
+  const months2=[...new Set(rows.map(r=>r.month))].sort();
+  const lbs2=months2.map(m=>ML[m]||m);
+  mkLine('c-lc-l1',lbs2,[{label:'KYP→PA days',data:months2.map(m=>{const r=rows.filter(x=>x.month===m);return r.length?Math.round(avgL1(r)*10)/10:null;}),borderColor:'#2563eb',borderWidth:2,pointRadius:4}]);
+  mkLine('c-lc-l3',lbs2,[{label:'KYP→IPD days',data:months2.map(m=>{const r=rows.filter(x=>x.month===m);return r.length?Math.round(avgL3(r)*10)/10:null;}),borderColor:'#059669',borderWidth:2,pointRadius:4}]);
+  // Table
+  let tbl=`<table class="lc-tbl"><thead><tr><th>Month</th><th>Category</th><th>KYP→PA (days)</th><th>PA→IPD (days)</th><th>KYP→IPD (days)</th><th>n</th></tr></thead><tbody>`;
+  rows.sort((a,b)=>a.month.localeCompare(b.month)||(a.dept||'').localeCompare(b.dept||'')).forEach(r=>{
+    const spd=v=>v===null?`<span class="na">—</span>`:v<=7?`<span class="blc fast">${v}d</span>`:v<=14?`<span class="blc mid">${v}d</span>`:`<span class="blc slow">${v}d</span>`;
+    tbl+=`<tr><td>${ML[r.month]||r.month}</td><td>${SH[r.dept]||r.dept}</td><td>${spd(r.l1)}</td><td>${spd(r.l2)}</td><td>${spd(r.l3)}</td><td style="color:#9ca3af">${r.l1n}</td></tr>`;
+  });
+  tbl+=`</tbody></table>`;
+  $('lc-tw').innerHTML=tbl;
+}
 function renderKYP(){const f=gF(),rows=fA(AGG.kyp_monthly,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const bm=gBM(rows,3),vals=months.map(m=>bm[m]||0);const tot=vals.reduce((a,b)=>a+b,0),avg=months.length?Math.round(tot/months.length):0,mi=vals.indexOf(Math.max(...vals));$('kyp-cards').innerHTML=mc('Total KYP',tot.toLocaleString(),'b')+mc('Avg/Month',avg.toLocaleString(),'p')+mc('Peak Month',mi>=0?ML[months[mi]]||months[mi]:'-','g',Math.max(0,...vals)+' KYPs')+mc('Latest Month',vals[vals.length-1]||0,'a');mkLine('c-kyp',lbs,[{label:'KYP',data:vals,borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,0.07)',fill:true,borderWidth:2}]);}
 function renderPA(){const f=gF(),rows=fA(AGG.pa_monthly,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const bm=gBM(rows,3),vals=months.map(m=>bm[m]||0);const tot=vals.reduce((a,b)=>a+b,0),avg=months.length?Math.round(tot/months.length):0,mi=vals.indexOf(Math.max(...vals));$('pa-cards').innerHTML=mc('Total Pre-Auth',tot.toLocaleString(),'b')+mc('Avg/Month',avg.toLocaleString(),'p')+mc('Peak Month',mi>=0?ML[months[mi]]||months[mi]:'-','g',Math.max(0,...vals)+' PA')+mc('Latest Month',vals[vals.length-1]||0,'a');mkLine('c-pa',lbs,[{label:'PA',data:vals,borderColor:'#059669',backgroundColor:'rgba(5,150,105,0.07)',fill:true,borderWidth:2}]);}
 function renderApproval(){const f=gF(),rows=fA(AGG.pa_status_monthly,f),months=aM(f),lbs=months.map(m=>ML[m]||m);const A={},R={},C={},I={},T={};rows.forEach(r=>{const m=r[0];if(!m)return;A[m]=(A[m]||0)+(r[3]||0);R[m]=(R[m]||0)+(r[4]||0);C[m]=(C[m]||0)+(r[5]||0);I[m]=(I[m]||0)+(r[6]||0);T[m]=(T[m]||0)+(r[3]||0)+(r[4]||0)+(r[5]||0)+(r[6]||0);});const tA=Object.values(A).reduce((a,b)=>a+b,0),tR=Object.values(R).reduce((a,b)=>a+b,0),tC=Object.values(C).reduce((a,b)=>a+b,0),tT=Object.values(T).reduce((a,b)=>a+b,0);// Safety: replace NaN with 0
